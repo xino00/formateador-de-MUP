@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Formateador de medicación MUP</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.3.0/firebase-app.js";
+        import { getAnalytics, logEvent } from "https://www.gstatic.com/firebasejs/10.3.0/firebase-analytics.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBXuGJW9Kr3Avzn0u3Rgsvc3s_hrz_Fy64",
+            authDomain: "formateadormup.firebaseapp.com",
+            projectId: "formateadormup",
+            storageBucket: "formateadormup.appspot.com",
+            messagingSenderId: "164782422577",
+            appId: "1:164782422577:web:e63f7f26a6a5a7e03f7310",
+            measurementId: "G-8DEB5ZZZ2S"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
+        logEvent(analytics, 'mup_edge_start');
+
+        window.analytics = analytics;
+        window.logEvent = logEvent;
+    </script>
+    <script>
+        function ExtraerDatos() {
+            if(window.analytics) window.logEvent(window.analytics, 'extract_data_button_click');
+            
+            let muptext = document.getElementById("muptext").value;
+            let parser = new DOMParser();
+            let parsedHtml = parser.parseFromString(muptext, 'text/html');
+
+            // Encontrar los elementos TD específicos de ExtJS en MUP
+            let descripcionFarmaco = parsedHtml.getElementsByClassName('x-grid3-cell-inner x-grid3-col-descripcionFarmaco');
+            let descripcionPosologia = parsedHtml.getElementsByClassName('x-grid3-cell-inner x-grid3-col-descripcionPosologia');
+
+            let farmacos = [];
+
+            for (let i = 0; i < descripcionFarmaco.length; i++) {
+                let farmaco = {};
+                let data = [];
+
+                // Extraer nombre y principio activo
+                try {
+                    let spans = descripcionFarmaco[i].getElementsByTagName("span");
+                    let targetSpan = spans[0];
+                    
+                    // Si el primer span no tiene el qtip, probamos el segundo
+                    if (!targetSpan.hasAttribute("ext:qtip") && spans.length > 1) {
+                        targetSpan = spans[1];
+                    }
+                    data = targetSpan.getAttribute("ext:qtip").split("<br/>");
+                } catch (error) {
+                    console.warn("No se pudo extraer el tooltip del fármaco en la fila", i);
+                    data = ["", "none"];
+                }
+
+                farmaco.texto = data[0] || "";
+                farmaco.textoFormateado = FormatearTexto(farmaco.texto);
+                farmaco.principio = data[1] && data[1].length > 0 ? data[1] : "none";
+
+                // Extraer posología
+                try {
+                    let posologiaSpan = descripcionPosologia[i].getElementsByTagName("span")[0];
+                    farmaco.posologia = posologiaSpan.getAttribute("ext:qtip") || "";
+                } catch (error) {
+                    farmaco.posologia = descripcionPosologia[i].textContent.trim() || "";
+                }
+
+                // Filtro obligatorio independiente para "prevecolon"
+                let skipDrug = false;
+                let textoLower = farmaco.texto.toLowerCase();
+                let principioLower = farmaco.principio.toLowerCase();
+
+                if (textoLower.includes("prevecolon") || principioLower.includes("prevecolon")) {
+                    skipDrug = true;
+                }
+
+                if (skipDrug) continue; 
+
+                // Filtro de accesorios opcional
+                if (document.getElementById("accesoriosCheckbox").checked) {
+                    const accesorios = [
+                        "kit", "bolsas", "sonda", "rodillera", "aposito", "filtros", 
+                        "tobillera", "media", "absorbente", "camara", "muslera", 
+                        "gelificad", "esparadra", "muñequera", "venda", "algodon", 
+                        "accesorio", "codera", "parche", "gasa", "braguero", "pinzas", 
+                        "funda", "inhalador", "canula", "colector", "sistema", "irrigador", 
+                        "deposito", "calcetin", "suspensor", "obturador", "ducha"
+                    ];
+                    
+                    if (accesorios.some(substring => principioLower.includes(substring))) {
+                        continue; // Saltamos este accesorio
+                    }
+                }
+                
+                farmacos.push(farmaco);
+            }
+
+            window.extractedFarmacos = farmacos;
+            RenderSidebar(farmacos);
+            UpdateResultText();
+
+            if(window.analytics) window.logEvent(window.analytics, 'data_extracted', {
+                total_drugs: farmacos.length,
+                accessories_filtered: document.getElementById("accesoriosCheckbox").checked
+            });
+        }
+
+        function UpdateResultText() {
+            let activeFarmacos = [];
+            let checkboxes = document.querySelectorAll('.farmaco-checkbox');
+            
+            checkboxes.forEach((cb, index) => {
+                if (cb && cb.checked && window.extractedFarmacos[index]) {
+                    activeFarmacos.push(window.extractedFarmacos[index]);
+                }
+            });
+            PrintData(activeFarmacos);
+        }
+
+        function RenderSidebar(farmacos) {
+            let sidebar = document.getElementById("farmacosSidebar");
+            if (!sidebar) return; 
+            
+            sidebar.innerHTML = '';
+            
+            if (farmacos.length === 0) {
+                sidebar.innerHTML = '<p class="text-muted small">No se extrajeron fármacos.</p>';
+                return;
+            }
+            
+            farmacos.forEach((f, i) => {
+                let div = document.createElement("div");
+                div.className = "form-check mb-2";
+
+                let checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.className = "form-check-input farmaco-checkbox";
+                checkbox.id = "farmaco_" + i;
+                checkbox.checked = true;
+                checkbox.onchange = function () {
+                    if(window.analytics) window.logEvent(window.analytics, 'toggle_drug_checkbox', {
+                        drug_text: f.textoFormateado || f.texto,
+                        checked: this.checked
+                    });
+                    UpdateResultText();
+                };
+
+                let label = document.createElement("label");
+                label.className = "form-check-label";
+                label.htmlFor = "farmaco_" + i;
+                label.style.fontSize = "0.9rem";
+                label.style.cursor = "pointer";
+                label.textContent = f.textoFormateado || f.texto;
+                if (f.posologia) label.title = f.posologia;
+
+                div.appendChild(checkbox);
+                div.appendChild(label);
+                sidebar.appendChild(div);
+            });
+        }
+
+        function FormatearTexto(texto) {
+            if (!texto) return "";
+            let txtLower = texto.toLowerCase();
+            
+            // Lista de unidades a recortar (mantiene la lógica original pero más limpia)
+            const unidades = [" ui ", "ui ", " mg ", "mg ", " mcg ", "mcg ", "microgramos", "/g ", "/ml ", " ml ", "ml ", "/l ", " g ", " 1g ", "/pulverizacion ", "/dos ", ", "];
+            
+            for (let unidad of unidades) {
+                if (txtLower.includes(unidad)) {
+                    let fragmento = txtLower.split(unidad)[0];
+                    // Ajustes específicos que hacía el compañero
+                    if (unidad === "microgramos") return fragmento + "mcg";
+                    if (unidad === "/dos ") return fragmento + "/dosis";
+                    if (unidad === ", ") return fragmento; 
+                    return fragmento + unidad.trim(); // Se añade la unidad sin espacios extra
+                }
+            }
+            return txtLower;
+        }
+
+        function PrintData(data) {
+            if (data.length === 0) {
+                document.getElementById("resultText").textContent = "No hay fármacos seleccionados.";
+                return;
+            }
+
+            let textoFinal = data.map(farmaco => {
+                let nombre = farmaco.textoFormateado !== "" ? farmaco.textoFormateado : farmaco.texto;
+                return `${nombre} (${farmaco.posologia})`;
+            }).join(", ");
+
+            // Capitalizar primera letra
+            textoFinal = textoFinal.charAt(0).toUpperCase() + textoFinal.slice(1);
+            
+            // SEGURIDAD: Usamos textContent en lugar de innerHTML
+            document.getElementById("resultText").textContent = textoFinal;
+        }
+
+        function CopiarContenido() {
+            let resultText = document.getElementById("resultText").textContent;
+            if(window.analytics) window.logEvent(window.analytics, 'copy_content_button_click', {
+                text_length: resultText.length
+            });
+            navigator.clipboard.writeText(resultText).then(() => {
+                // Pequeño feedback visual opcional
+                console.log("Copiado al portapapeles");
+            }).catch(err => {
+                console.error('Error al copiar: ', err);
+            });
+        }
+
+        async function PegarPortapapeles() {
+            if(window.analytics) window.logEvent(window.analytics, 'paste_clipboard_button_click');
+            try {
+                const text = await navigator.clipboard.readText();
+                document.getElementById("muptext").value = text;
+                ExtraerDatos();
+            } catch (error) {
+                console.error('Error leyendo el portapapeles:', error);
+                alert("Tu navegador bloquea el pegado automático. Usa Ctrl+V en el cuadro de texto.");
+            }
+        }
+    </script>
+</head>
+
+<body class="bg-light">
+    <header>
+        <div class="jumbotron bg-white shadow-sm border-bottom">
+            <div class="container">
+                <div class="row">
+                    <div class="col-12">
+                        <h1 class="text-center text-primary">Formateador de medicación MUP</h1>
+                        <p class="text-center text-secondary">Copia el texto desde el MUP e introdúcelo en el cuadro de texto de abajo.</p>
+                        <p>&nbsp;</p>
+                        <div class="d-flex flex-wrap justify-content-center gap-3">
+                            <button class="btn btn-outline-primary btn-lg mx-2 my-1" onClick="PegarPortapapeles()">Pegar Portapapeles</button>
+                            <button class="btn btn-primary btn-lg mx-2 my-1" onClick="ExtraerDatos()">Formatéalo</button>
+                            <button class="btn btn-success btn-lg mx-2 my-1" onClick="CopiarContenido()">Copiar contenido</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+    
+    <div class="container-fluid px-4">
+        <div class="row">
+            <div class="col-md-3 mt-3">
+                </div>
+            <div class="col-md-6 mt-3">
+                <div class="d-flex justify-content-center">
+                    <textarea class="form-control shadow-sm" id="muptext" name="MUPText" rows="8"
+                        oninput="ExtraerDatos()" placeholder="Pega aquí el código HTML..."></textarea>
+                </div>
+                <form class="mt-3 bg-white p-3 rounded shadow-sm border">
+                    <div class="form-group form-check mb-0">
+                        <input type="checkbox" class="form-check-input" id="accesoriosCheckbox" value="noAccesorios"
+                            checked onchange="if(window.analytics) window.logEvent(window.analytics, 'toggle_accesorios_filter', {checked: this.checked}); ExtraerDatos();">
+                        <label class="form-check-label font-weight-bold" for="accesoriosCheckbox">Omitir material sanitario y accesorios</label>
+                    </div>
+                </form>
+                <div class="col-12 mt-3 px-0">
+                    <div class="bg-white p-4 border rounded shadow-sm text-dark" id="resultText" name="ResultText"
+                        style="min-height: 100px; font-size: 1.1rem; line-height: 1.6;">
+                        Aquí se mostrará el texto resultado...
+                    </div>
+                </div>
+                <div class="col-12 mt-3 px-0">
+                    <button class="btn btn-outline-secondary" type="button" data-toggle="collapse"
+                        data-target="#collapseExample" aria-expanded="false" aria-controls="collapseExample"
+                        onclick="if(window.analytics) window.logEvent(window.analytics, 'toggle_instructions');">
+                        Mostrar instrucciones
+                    </button>
+                </div>
+            </div>
+            
+            <div class="col-md-3 mt-3">
+                <div id="farmacosSidebar" class="p-3 bg-white border rounded shadow-sm"
+                    style="max-height: 60vh; overflow-y: auto;">
+                    <h5 class="mb-3 text-primary border-bottom pb-2">Lista a copiar</h5>
+                    <p class="text-muted small">Extrae datos primero para ver los fármacos aquí.</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row mt-4">
+            <div class="col-md-6 offset-md-3 text-left pb-4">
+                <style>
+                    .max-width { max-width: 100%; height: auto; }
+                </style>
+                <div class="collapse" id="collapseExample">
+                    <div class="card card-body text-left shadow-sm border-0">
+                        <h5 class="mb-3 text-primary">¿Cómo obtener el texto del MUP?</h5>
+                        <ol class="pl-3">
+                            <li class="mb-3">
+                                <strong>Accede al MUP</strong> en tu navegador.
+                                <div class="mt-2 text-center text-muted small">(Imagen: Inspeccionar elemento)</div>
+                            </li>
+                            <li class="mb-3">
+                                Haz clic con el <strong>botón derecho</strong> en cualquier punto fuera de la tabla y
+                                selecciona <strong>"Inspeccionar"</strong>.
+                            </li>
+                            <li class="mb-3">
+                                Localiza la primera línea del html, donde se encuentra la tabla de medicación, haz clic derecho
+                                sobre ella y selecciona <strong>Copiar > Copiar elemento</strong> (Copy outerHTML).
+                            </li>
+                            <li>
+                                Vuelve a esta página y <strong>pega el contenido</strong> en el cuadro de texto superior.
+                            </li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <footer class="text-center mt-5 pb-4 border-top pt-4 bg-white">
+        <div class="container">
+            <div class="row">
+                <div class="col-12">
+                    <a rel="license" href="http://creativecommons.org/licenses/by-nc/4.0/"><img
+                            alt="Creative Commons License" style="border-width:0; margin-bottom: 10px;"
+                            src="https://i.creativecommons.org/l/by-nc/4.0/88x31.png" /></a><br />
+                    <span class="small text-muted">This work is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc/4.0/">Creative Commons Attribution-NonCommercial 4.0 International License</a>.</span>
+                    <p class="small mt-2">Puedes consultar el proyecto en github o descargar una copia para usarlo offline <a href="https://github.com/josepotud/mup_edge" target="_blank">aquí</a>.</p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+</body>
+</html>
